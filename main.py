@@ -1,5 +1,5 @@
 import time
-from utils.notifier import send_telegram_message, get_telegram_updates, answer_callback
+from utils.notifier import send_telegram_message, edit_telegram_message, get_telegram_updates, answer_callback
 from core.data_fetcher import DataFetcher
 from core.smc_engine import SMCEngine
 from core.risk_manager import RiskManager
@@ -9,7 +9,7 @@ from core.scanner import MarketScanner
 
 
 def main():
-    print("Запуск SMC Trading Bot (Повна Автономія)...\n")
+    print("Запуск SMC Trading Bot (Clean UI Mode)...\n")
 
     fetcher = DataFetcher(exchange_id='bybit')
     risk_manager = RiskManager(balance_usdt=1000, base_risk_pct=1.0, base_rr=2.0)
@@ -23,9 +23,9 @@ def main():
 
     last_signal_times = {}
     active_signals = {}
-    last_hot_coins = []  # Пам'ять для відстеження змін у списку монет
 
-    send_telegram_message("🚀 <b>Бот онлайн!</b>\nАналізую макро-режим та шукаю ліквідність...")
+    # ID повідомлення зі статусом
+    status_message_id = None
 
     while True:
         try:
@@ -47,22 +47,32 @@ def main():
                     elif data == "ignore":
                         answer_callback(query['id'], "🗑 Відхилено.")
 
-            # --- СКАНУВАННЯ ---
+            # --- СКАНУВАННЯ ТА ОНОВЛЕННЯ СТАТУСУ ---
             if current_time - last_scan_time >= SCAN_INTERVAL:
                 current_macro = macro_filter.get_market_regime()
+                hot_symbols = scanner.get_hot_symbols(top_n=3)
 
+                # Формуємо гарний текст статусу
+                coins_formatted = ", ".join([f"<code>{s}</code>" for s in hot_symbols])
+                status_text = (
+                    f"🛡 <b>SMC TRADE BOT STATUS</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🌍 <b>Macro:</b> {current_macro['regime']}\n"
+                    f"📝 <b>Desc:</b> {current_macro['desc']}\n"
+                    f"🔥 <b>Hot Targets:</b> {coins_formatted}\n"
+                    f"⏰ <b>Last Update:</b> <code>{time.strftime('%H:%M:%S')}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🛰 <i>Бот сканує ринок у реальному часі...</i>"
+                )
+
+                # Якщо статусного повідомлення ще немає - надсилаємо, інакше - редагуємо
+                if status_message_id is None:
+                    status_message_id = send_telegram_message(status_text)
+                else:
+                    edit_telegram_message(status_message_id, status_text)
+
+                # АНАЛІЗ МОНЕТ
                 if current_macro["multiplier"] > 0:
-                    hot_symbols = scanner.get_hot_symbols(top_n=3)
-
-                    # Якщо список монет змінився — повідомляємо в Telegram
-                    if hot_symbols != last_hot_coins:
-                        coins_list = ", ".join(hot_symbols)
-                        status_msg = (f"🔍 <b>Оновлено цілі сканування:</b>\n"
-                                      f"🔥 Монети: <code>{coins_list}</code>\n"
-                                      f"📊 Режим: {current_macro['regime']}")
-                        send_telegram_message(status_msg)
-                        last_hot_coins = hot_symbols
-
                     for sym in hot_symbols:
                         df = fetcher.get_historical_data(sym, timeframe, limit=250)
                         if df is not None:
@@ -77,10 +87,17 @@ def main():
                                 )
                                 if trade_params:
                                     active_signals[sym] = trade_params
-                                    msg = (f"🎯 <b>НОВИЙ СЕТАП: {sym}</b>\n"
-                                           f"Тип: {signal_info['type']}\n"
-                                           f"Вхід: {trade_params['entry']}\n"
-                                           f"Ризик: {trade_params['risk_pct']}%")
+                                    # Сигнал завжди надсилаємо як НОВЕ повідомлення зі звуком
+                                    msg = (
+                                        f"🎯 <b>НОВИЙ СЕТАП: {sym}</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"Тип: <code>{signal_info['type']}</code>\n"
+                                        f"Сила: {signal_info['strength']}\n"
+                                        f"Вхід: <b>{trade_params['entry']}</b>\n"
+                                        f"SL: <code>{trade_params['stop_loss']}</code>\n"
+                                        f"TP: <code>{trade_params['take_profit']}</code>\n"
+                                        f"Ризик: {trade_params['risk_pct']}% (${trade_params['risk_usd']})"
+                                    )
 
                                     buttons = {"inline_keyboard": [[
                                         {"text": "✅ Trade", "callback_data": f"execute_{sym}"},
