@@ -82,3 +82,24 @@ def send_telegram_photo(photo_path: str, caption: str, reply_markup: dict = None
         payload = {'chat_id': CHAT_ID, 'caption': caption, 'parse_mode': 'HTML'}
         if reply_markup: payload['reply_markup'] = json.dumps(reply_markup)
         requests.post(url, data=payload, files={'photo': photo})
+
+def edit_telegram_caption(message_id: int, caption: str, reply_markup: dict = None):
+    """Редагує підпис під фото повідомленням."""
+    if not TELEGRAM_TOKEN or not CHAT_ID or not message_id:
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageCaption"
+    payload = {
+        'chat_id': CHAT_ID,
+        'message_id': message_id,
+        'caption': caption,
+        'parse_mode': 'HTML'
+    }
+    if reply_markup:
+        payload['reply_markup'] = json.dumps(reply_markup)
+
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"Помилка редагування підпису: {e}")
+

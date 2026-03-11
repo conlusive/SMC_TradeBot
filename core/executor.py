@@ -21,3 +21,9 @@ class Executor:
         # self.exchange.create_order(symbol, 'stop_market', 'sell', amount, params={'stopPrice': sl})
 
         return True
+
+    def close_trade(self, symbol: str):
+        """Закриває активну позицію."""
+        print(f"🛑 [EXECUTOR] ЗАКРИТТЯ ПОЗИЦІЇ: {symbol}")
+        # Тут буде код: self.exchange.create_market_order(symbol, 'sell', amount)
+        return True
