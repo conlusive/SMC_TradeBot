@@ -167,7 +167,9 @@ def main():
                                         f"━━━━━━━━━━━━━━━━━━━━\n"
                                         f"🎯 Вхід: <b>{trade_params['entry']}</b>\n"
                                         f"🛑 SL: <code>{trade_params['stop_loss']}</code>\n"
-                                        f"✅ TP1: <code>{trade_params['tp1']}</code>\n"
+                                        f"✅ TP1: <code>{trade_params['tp1']}</code> (50%)\n"
+                                        f"✅ TP2: <code>{trade_params['tp2']}</code> (25%)\n"
+                                        f"✅ TP3: <code>{trade_params['tp3']}</code> (25%)\n"
                                         f"⚖️ Ризик: {trade_params['risk_pct']}% (${trade_params['risk_usd']})"
                                     )
 

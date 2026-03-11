@@ -1,29 +1,19 @@
 class Executor:
     def __init__(self, exchange_id='bybit'):
-        # У майбутньому сюди ми передамо API ключі для реальної торгівлі
         self.exchange_id = exchange_id
 
     def execute_trade(self, symbol: str, trade_params: dict):
-        """
-        Отримує параметри угоди і відправляє ордер на біржу.
-        """
         print("\n" + "=" * 40)
         print(f"🚀 [EXECUTOR] ОТРИМАНО КОМАНДУ НА ВИКОНАННЯ!")
         print(f"Пара: {symbol}")
-        print(f"Купуємо об'єм: {trade_params['position_size']} монет")
-        print(f"Ціна входу: {trade_params['entry']}")
-        print(f"Ставимо Stop-Loss: {trade_params['stop_loss']}")
-        print(f"Ставимо Take-Profit: {trade_params['take_profit']}")
+        print(f"Об'єм: {trade_params['position_size']}")
+        print(f"Вхід: {trade_params['entry']}")
+        print(f"SL: {trade_params['stop_loss']}")
+        # Виводимо всі три тейки замість одного старого
+        print(f"TP1: {trade_params['tp1']} | TP2: {trade_params['tp2']} | TP3: {trade_params['tp3']}")
         print("=" * 40 + "\n")
-
-        # Тут згодом буде код:
-        # self.exchange.create_order(symbol, 'limit', 'buy', amount, price)
-        # self.exchange.create_order(symbol, 'stop_market', 'sell', amount, params={'stopPrice': sl})
-
         return True
 
     def close_trade(self, symbol: str):
-        """Закриває активну позицію."""
         print(f"🛑 [EXECUTOR] ЗАКРИТТЯ ПОЗИЦІЇ: {symbol}")
-        # Тут буде код: self.exchange.create_market_order(symbol, 'sell', amount)
         return True
