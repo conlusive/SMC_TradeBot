@@ -1,49 +1,49 @@
 class RiskManager:
-    def __init__(self, balance_usdt: float, risk_per_trade_pct: float = 1.0, reward_ratio: float = 2.0):
-        """
-        balance_usdt: Твій тестовий баланс (наприклад, 1000$)
-        risk_per_trade_pct: Відсоток ризику на одну угоду (за замовчуванням 1%)
-        reward_ratio: Відношення прибутку до ризику (Risk/Reward). 2.0 означає угоди 1 до 2.
-        """
+    def __init__(self, balance_usdt: float, base_risk_pct: float = 1.0, base_rr: float = 2.0):
         self.balance = balance_usdt
-        self.risk_pct = risk_per_trade_pct / 100.0
-        self.rr = reward_ratio
+        self.base_risk_pct = base_risk_pct
+        self.base_rr = base_rr
 
-    def calculate_trade(self, signal_type: str, entry_price: float, recent_low: float, recent_high: float):
+    def calculate_trade(self, signal_type: str, entry_price: float, recent_low: float, recent_high: float,
+                        macro_context: dict):
         """
-        Розраховує всі параметри майбутньої угоди.
+        Розраховує параметри з урахуванням глобального Макро-режиму (Macro Context).
         """
-        # Скільки доларів ми готові втратити в найгіршому випадку
-        risk_in_dollars = self.balance * self.risk_pct
+        multiplier = macro_context.get("multiplier", 1.0)
+        rr_multiplier = macro_context.get("rr_multiplier", 1.0)
 
-        # Визначаємо Stop-Loss (трохи за екстремумом для безпеки)
+        # Якщо режим "СМЕРТЬ", ми взагалі не розраховуємо угоди
+        if multiplier <= 0:
+            return None
+
+        # Динамічний ризик (напр. 1% * 2.0 = 2% в Risk ON High Liq)
+        actual_risk_pct = (self.base_risk_pct * multiplier) / 100.0
+        actual_rr = self.base_rr * rr_multiplier
+
+        risk_in_dollars = self.balance * actual_risk_pct
+
         if "BULLISH" in signal_type:
-            # Для лонгу стоп ставимо трохи нижче останнього мінімуму
-            stop_loss = recent_low * 0.999  # Відступ 0.1% від мінімуму
+            stop_loss = recent_low * 0.999
             risk_per_coin = entry_price - stop_loss
-
-            if risk_per_coin <= 0: return None  # Захист від помилок
-
-            take_profit = entry_price + (risk_per_coin * self.rr)
+            if risk_per_coin <= 0: return None
+            take_profit = entry_price + (risk_per_coin * actual_rr)
 
         elif "BEARISH" in signal_type:
-            # Для шорту стоп ставимо трохи вище останнього максимуму
-            stop_loss = recent_high * 1.001  # Відступ 0.1% від максимуму
+            stop_loss = recent_high * 1.001
             risk_per_coin = stop_loss - entry_price
-
             if risk_per_coin <= 0: return None
-
-            take_profit = entry_price - (risk_per_coin * self.rr)
+            take_profit = entry_price - (risk_per_coin * actual_rr)
         else:
             return None
 
-        # Розраховуємо розмір позиції (скільки монет BTC купити)
         position_size = risk_in_dollars / risk_per_coin
 
         return {
             "entry": round(entry_price, 2),
             "stop_loss": round(stop_loss, 2),
             "take_profit": round(take_profit, 2),
-            "position_size": round(position_size, 5),  # 5 знаків після коми для крипти
-            "risk_usd": round(risk_in_dollars, 2)
+            "position_size": round(position_size, 5),
+            "risk_usd": round(risk_in_dollars, 2),
+            "actual_rr": round(actual_rr, 1),
+            "risk_pct": round(actual_risk_pct * 100, 2)
         }
