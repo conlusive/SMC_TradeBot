@@ -75,3 +75,10 @@ def answer_callback(callback_query_id: str, text: str = ""):
         requests.post(url, data={'callback_query_id': callback_query_id, 'text': text})
     except Exception:
         pass
+
+def send_telegram_photo(photo_path: str, caption: str, reply_markup: dict = None):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    with open(photo_path, 'rb') as photo:
+        payload = {'chat_id': CHAT_ID, 'caption': caption, 'parse_mode': 'HTML'}
+        if reply_markup: payload['reply_markup'] = json.dumps(reply_markup)
+        requests.post(url, data=payload, files={'photo': photo})
