@@ -1,10 +1,11 @@
 import time
 import os
+from datetime import datetime
 from utils.notifier import (
     send_telegram_message,
     edit_telegram_message,
     send_telegram_photo,
-    edit_telegram_caption,  # Додано для оновлення карток із фото
+    edit_telegram_caption,
     get_telegram_updates,
     answer_callback
 )
@@ -14,96 +15,91 @@ from core.risk_manager import RiskManager
 from core.executor import Executor
 from core.macro_filter import MacroFilter
 from core.scanner import MarketScanner
-from core.dca_investor import DCAInvestor
+from core.database import Database
 from core.sentiment_analyzer import SentimentAnalyzer
-from core.earn_manager import EarnManager
 from utils.visualizer import create_signal_chart
 
 
 def main():
-    print("🚀 Запуск SMC Trading Bot (Interactive Management Mode)...\n")
+    print("🚀 Запуск SMC Trading Bot (Server Professional Edition)...\n")
 
-    # 1. Ініціалізація всіх систем
+    # 1. Ініціалізація систем
     fetcher = DataFetcher(exchange_id='bybit')
+    db = Database()  # База даних для серверної історії
     risk_manager = RiskManager(balance_usdt=1000, base_risk_pct=1.0)
     executor = Executor()
     macro_filter = MacroFilter(fetcher)
     scanner = MarketScanner(fetcher)
-    dca_investor = DCAInvestor(fetcher.exchange)
-    earn_manager = EarnManager(fetcher.exchange)
 
     timeframe = '15m'
     SCAN_INTERVAL = 60
     last_scan_time = 0
+    last_report_date = ""
 
     last_signal_times = {}
-    active_signals = {}  # Зберігаємо параметри активних сигналів
-
-    # ID повідомлення для "Живого статусу"
+    active_signals = {}
     status_message_id = None
 
     while True:
         try:
             current_time = time.time()
+            now = datetime.now()
 
-            # --- 2. ОБРОБКА КНОПОК TELEGRAM ---
+            # --- 2. ЩОДЕННИЙ ЗВІТ (Автоматика для сервера) ---
+            # Надсилаємо о 09:00 ранку звіт за минулу добу
+            if now.hour == 9 and now.minute == 0 and last_report_date != now.strftime("%Y-%m-%d"):
+                stats = db.get_daily_stats()
+                report = (
+                    f"📅 <b>ЩОДЕННИЙ ЗВІТ БОТА</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ Закрито угод: {stats['count']}\n"
+                    f"💰 Баланс: ${risk_manager.balance}\n"
+                    f"🖥 Статус сервера: <b>ONLINE</b>"
+                )
+                send_telegram_message(report)
+                last_report_date = now.strftime("%Y-%m-%d")
+
+            # --- 3. ОБРОБКА КНОПОК TELEGRAM (Керування угодами) ---
             updates = get_telegram_updates()
             for update in updates:
                 if 'callback_query' in update:
                     query = update['callback_query']
-                    data = query['data']
-                    msg_id = query['message']['message_id']
-                    call_id = query['id']
+                    data, msg_id, call_id = query['data'], query['message']['message_id'], query['id']
 
-                    # Кнопка: ВИКОНАТИ УГОДУ
                     if data.startswith("execute_"):
                         sym = data.split("_")[1]
                         if sym in active_signals:
                             trade = active_signals[sym]
                             executor.execute_trade(sym, trade)
+                            db.log_trade(sym, trade['type'], trade['entry'])  # Запис в історію
 
-                            # ТРАНСФОРМАЦІЯ: Сигнал стає панеллю керування
+                            # Перетворюємо сигнал на панель керування
                             manage_caption = (
-                                f"🚀 <b>ПОЗИЦІЯ АКТИВНА: {sym}</b>\n"
+                                f"🚀 <b>УГОДА АКТИВНА: {sym}</b>\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🎯 <b>Вхід:</b> {trade['entry']}\n"
-                                f"🛑 <b>SL:</b> {trade['stop_loss']}\n"
-                                f"✅ <b>TP1:</b> {trade['tp1']} (50%)\n"
-                                f"✅ <b>TP2:</b> {trade['tp2']} (25%)\n"
+                                f"⚖️ Плече: <b>{trade['leverage']}x</b>\n"
+                                f"🎯 Вхід: {trade['entry']}\n"
+                                f"🛑 SL: {trade['stop_loss']}\n"
+                                f"✅ TP1: {trade['tp1']} | TP2: {trade['tp2']}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📈 <i>Статус: Моніторинг ринку...</i>"
+                                f"⏳ <i>Бот моніторить вихід з позиції...</i>"
                             )
-
                             manage_buttons = {"inline_keyboard": [
                                 [{"text": f"🛑 Закрити {sym}", "callback_data": f"close_{sym}"}],
-                                [{"text": "⚙️ Перевести в БЕЗЗБИТОК", "callback_data": f"breakeven_{sym}"}]
+                                [{"text": "⚙️ В беззбиток", "callback_data": f"be_{sym}"}]
                             ]}
-
                             edit_telegram_caption(msg_id, manage_caption, manage_buttons)
-                            answer_callback(call_id, "✅ Позицію відкрито!")
+                            answer_callback(call_id, "Позицію відкрито!")
                         else:
-                            answer_callback(call_id, "❌ Помилка: Сетап застарів")
+                            answer_callback(call_id, "❌ Сетап застарів")
 
-                    # Кнопка: ЗАКРИТИ УГОДУ
                     elif data.startswith("close_"):
                         sym = data.split("_")[1]
-                        # Виклик методу закриття в Executor (треба додати в executor.py)
-                        # executor.close_trade(sym)
+                        executor.close_trade(sym)
+                        edit_telegram_caption(msg_id, f"🏁 <b>УГОДУ ПО {sym} ЗАВЕРШЕНО</b>", {"inline_keyboard": []})
+                        answer_callback(call_id, "Закрито!")
 
-                        final_caption = (
-                            f"🏁 <b>УГОДУ ПО {sym} ЗАКРИТО</b>\n"
-                            f"━━━━━━━━━━━━━━━━━━━━\n"
-                            f"<i>Всі ордери скасовано. Позицію ліквідовано.</i>"
-                        )
-                        edit_telegram_caption(msg_id, final_caption, {"inline_keyboard": []})
-                        answer_callback(call_id, "🛑 Угоду закрито")
-
-                    elif data == "ignore":
-                        answer_callback(call_id, "🗑 Видалено")
-                        # Можна видалити повідомлення або просто прибрати кнопки
-                        edit_telegram_caption(msg_id, "🗑 <i>Сетап проігноровано.</i>", {"inline_keyboard": []})
-
-            # --- 3. ЦИКЛ СКАНУВАННЯ ТА МОНІТОРИНГУ ---
+            # --- 4. СКАНУВАННЯ ТА ЖИВИЙ СТАТУС ---
             if current_time - last_scan_time >= SCAN_INTERVAL:
                 current_macro = macro_filter.get_market_regime()
                 btc_sentiment = fetcher.get_market_sentiment('BTC/USDT')
@@ -112,16 +108,17 @@ def main():
                 hot_symbols = scanner.get_hot_symbols(top_n=3)
                 coins_formatted = ", ".join([f"<code>{s}</code>" for s in hot_symbols])
 
+                # Формуємо Живий Статус
                 status_text = (
                     f"🛡 <b>SMC TRADE BOT STATUS</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>Стан:</b> {current_macro['desc']}\n"
-                    f"💰 <b>BTC Funding:</b> <code>{btc_analysis['funding']}%</code> | {btc_analysis['status']}\n"
+                    f"💰 <b>BTC Funding:</b> <code>{btc_analysis['funding']}%</code>\n"
                     f"📈 <b>BTC OI:</b> <code>{btc_analysis['oi_formatted']}</code>\n"
                     f"🔥 <b>Цілі:</b> {coins_formatted}\n"
-                    f"⏰ <b>Оновлено:</b> <code>{time.strftime('%H:%M:%S')}</code>\n"
+                    f"⏰ <b>Update:</b> <code>{now.strftime('%H:%M:%S')}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"{btc_analysis['warning'] if btc_analysis['warning'] else '🛰 <i>Сканування активне...</i>'}"
+                    f"{btc_analysis['warning'] if btc_analysis['warning'] else '🛰 <i>Сервер працює, шукаю Smart Money...</i>'}"
                 )
 
                 if status_message_id is None:
@@ -129,56 +126,55 @@ def main():
                 else:
                     edit_telegram_message(status_message_id, status_text)
 
-                # --- 4. ВИКОНАННЯ СТРАТЕГІЇ ---
-                if current_macro["multiplier"] == 0.0:
-                    dca_report = dca_investor.execute_dca(risk_manager.balance)
-                    if dca_report and dca_report != "LOW_BALANCE":
-                        send_telegram_message(f"🛒 <b>DCA ЗАКУПКА:</b>\n" + "\n".join(dca_report))
-                else:
+                # --- 5. ПОШУК СИГНАЛІВ З МТF ФІЛЬТРОМ ---
+                if current_macro["multiplier"] > 0:
                     for sym in hot_symbols:
-                        df = fetcher.get_historical_data(sym, timeframe, limit=100)
-                        if df is not None:
-                            engine = SMCEngine(df)
-                            engine.analyze()
-                            signal_info = engine.get_latest_signal()
+                        # ПЕРЕВІРКА ТРЕНДУ 1H (Multi-Timeframe)
+                        df_1h = fetcher.get_historical_data(sym, '1h', limit=50)
+                        if df_1h is None: continue
+                        ema_1h = df_1h['close'].ewm(span=50).mean().iloc[-1]
+                        trend_1h = "UP" if df_1h.iloc[-1]['close'] > ema_1h else "DOWN"
 
-                            if signal_info and df.iloc[-2]['timestamp'] != last_signal_times.get(sym):
+                        # АНАЛІЗ 15M (SMC)
+                        df = fetcher.get_historical_data(sym, timeframe, limit=100)
+                        engine = SMCEngine(df)
+                        engine.analyze()
+                        signal = engine.get_latest_signal()
+
+                        if signal and df.iloc[-2]['timestamp'] != last_signal_times.get(sym):
+                            # Фільтр: Тільки за глобальним трендом
+                            if ("BUY" in signal['type'] and trend_1h == "UP") or (
+                                    "SELL" in signal['type'] and trend_1h == "DOWN"):
                                 coin_sentiment = fetcher.get_market_sentiment(sym)
                                 coin_analysis = SentimentAnalyzer.analyze(coin_sentiment, sym)
 
-                                trade_params = risk_manager.calculate_trade(
-                                    signal_info["type"], df.iloc[-2]['close'],
-                                    signal_info["recent_low"], signal_info["recent_high"], current_macro
+                                trade = risk_manager.calculate_trade(
+                                    signal['type'], df.iloc[-2]['close'],
+                                    signal['recent_low'], signal['recent_high'], current_macro
                                 )
 
-                                if trade_params:
-                                    active_signals[sym] = trade_params
-                                    chart_path = create_signal_chart(
-                                        df, sym, signal_info["type"],
-                                        trade_params['entry'], trade_params['stop_loss'], trade_params['tp1']
-                                    )
+                                if trade:
+                                    active_signals[sym] = {**trade, "type": signal['type']}
+                                    chart = create_signal_chart(df, sym, signal['type'], trade['entry'],
+                                                                trade['stop_loss'], trade['tp1'])
 
                                     msg = (
                                         f"🎯 <b>НОВИЙ СЕТАП: {sym}</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"Тип: <code>{signal_info['type']}</code>\n"
+                                        f"Тип: <code>{signal['type']}</code> ({signal['strength']})\n"
+                                        f"Плече: <b>{trade['leverage']}x</b>\n"
                                         f"Funding: <code>{coin_analysis['funding']}%</code>\n"
-                                        f"Sentiment: <b>{coin_analysis['status']}</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━\n"
-                                        f"🎯 Вхід: <b>{trade_params['entry']}</b>\n"
-                                        f"🛑 SL: <code>{trade_params['stop_loss']}</code>\n"
-                                        f"✅ TP1: <code>{trade_params['tp1']}</code> (50%)\n"
-                                        f"✅ TP2: <code>{trade_params['tp2']}</code> (25%)\n"
-                                        f"✅ TP3: <code>{trade_params['tp3']}</code> (25%)\n"
-                                        f"⚖️ Ризик: {trade_params['risk_pct']}% (${trade_params['risk_usd']})"
+                                        f"🎯 Вхід: <b>{trade['entry']}</b>\n"
+                                        f"🛑 SL: <code>{trade['stop_loss']}</code>\n"
+                                        f"✅ TP1: <code>{trade['tp1']}</code>\n"
+                                        f"⚖️ Ризик: {trade['risk_pct']}% (${trade['risk_usd']})"
                                     )
-
                                     buttons = {"inline_keyboard": [[
                                         {"text": f"🚀 Trade {sym}", "callback_data": f"execute_{sym}"},
                                         {"text": "🗑 Skip", "callback_data": "ignore"}
                                     ]]}
-
-                                    send_telegram_photo(chart_path, msg, reply_markup=buttons)
+                                    send_telegram_photo(chart, msg, reply_markup=buttons)
                                     last_signal_times[sym] = df.iloc[-2]['timestamp']
                         time.sleep(0.5)
 
@@ -186,7 +182,7 @@ def main():
             time.sleep(1)
 
         except Exception as e:
-            print(f"❌ Критична помилка: {e}")
+            print(f"❌ Помилка main: {e}")
             time.sleep(10)
 
 
