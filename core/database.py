@@ -16,12 +16,11 @@ class Database:
                            pnl REAL, status TEXT, date TEXT)''')
         self.conn.commit()
 
-    def log_trade(self, symbol, trade_type, entry):
-        """Записує відкриття угоди."""
+    def log_trade(self, symbol, trade_type, entry, leverage):
         cursor = self.conn.cursor()
         date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO trades (symbol, type, entry, status, date) VALUES (?, ?, ?, ?, ?)",
-                       (symbol, trade_type, entry, 'OPEN', date))
+        cursor.execute("INSERT INTO trades (symbol, type, entry, leverage, status, date) VALUES (?, ?, ?, ?, ?, ?)",
+                       (symbol, trade_type, entry, leverage, 'OPEN', date))
         self.conn.commit()
 
     def get_daily_stats(self):
@@ -31,3 +30,11 @@ class Database:
         cursor.execute("SELECT COUNT(*) FROM trades WHERE status != 'OPEN'")
         count = cursor.fetchone()[0]
         return {"count": count}
+
+
+    def update_trade_pnl(self, symbol, pnl_usd):
+        """Оновлює PnL при закритті угоди."""
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE trades SET pnl = ?, status = ? WHERE symbol = ? AND status = 'OPEN'",
+                       (pnl_usd, 'CLOSED', symbol))
+        self.conn.commit()

@@ -1,73 +1,56 @@
 import pandas as pd
-from core.news_analyzer import NewsAnalyzer  # Передбачається наявність цього модуля
 
 
 class MacroFilter:
     def __init__(self, data_fetcher):
         self.fetcher = data_fetcher
-        self.news_analyzer = NewsAnalyzer()
 
     def get_market_regime(self) -> dict:
         """
-        Аналізує ринок на двох рівнях: 1 день (Глобальний тренд) та 4 години (Локальний настрій).
-        Враховує Індекс Страху та Жадібності для коригування ризиків.
+        Аналізує 4-годинний таймфрейм (4h) для швидкого реагування на зливи.
         """
-        # 1. Отримуємо дані
-        df_1d = self.fetcher.get_historical_data('BTC/USDT', '1d', limit=100)
-        df_4h = self.fetcher.get_historical_data('BTC/USDT', '4h', limit=100)
+        # Дивимось на 4-годинний графік BTC
+        df = self.fetcher.get_historical_data('BTC/USDT', '4h', limit=50)
 
-        if df_1d is None or df_4h is None or len(df_1d) < 50:
-            return {"regime": "UNKNOWN", "multiplier": 1.0, "desc": "⚠️ Очікування даних..."}
+        if df is None or len(df) < 30:
+            return {"regime": "UNKNOWN", "multiplier": 1.0, "desc": "Дані недоступні для аналізу"}
 
-        # 2. Глобальний тренд (1 день)
-        ema_50_1d = df_1d['close'].ewm(span=50, adjust=False).mean().iloc[-2]
-        price_1d = df_1d['close'].iloc[-2]
+        # Розрахунок середньої EMA 20 та обсягу
+        df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+        df['vol_sma_20'] = df['volume'].rolling(window=20).mean()
 
-        # 3. Локальний настрій (4 години)
-        ema_50_4h = df_4h['close'].ewm(span=50, adjust=False).mean().iloc[-2]
-        price_4h = df_4h['close'].iloc[-2]
+        last = df.iloc[-1]
 
-        # 4. Ліквідність (Обсяги за 14 днів)
-        vol_sma_14 = df_1d['volume'].rolling(window=14).mean().iloc[-2]
-        current_vol = df_1d['volume'].iloc[-2]
+        # ПЕРЕВІРКА НА ПАНІКУ (Crash Detection)
+        # Якщо за останні 12 годин (3 свічки по 4г) ціна впала більше ніж на 2%
+        price_change_recent = ((last['close'] - df.iloc[-4]['close']) / df.iloc[-4]['close']) * 100
+        is_crashing = price_change_recent < -2.0
 
-        # 5. Sentiment Filter (Fear & Greed)
-        fng = self.news_analyzer.get_fear_greed_index()
-        fng_multiplier = 1.0
-        if fng['value'] > 80:
-            fng_multiplier = 0.5  # Extreme Greed (захист від перегріву)
-        elif fng['value'] < 20:
-            fng_multiplier = 1.2  # Extreme Fear (потенційне дно)
+        is_risk_on = last['close'] > last['ema_20'] and not is_crashing
+        is_high_liq = last['volume'] > last['vol_sma_20']
 
-        is_global_bullish = price_1d > ema_50_1d
-        is_local_bullish = price_4h > ema_50_4h
-        is_high_liq = current_vol > vol_sma_14
-
-        # МАТРИЦЯ РЕЖИМІВ ЗА ФІЛОСОФІЄЮ
-        if is_global_bullish and is_local_bullish and is_high_liq:
+        # Матриця режимів згідно з твоєю філософією
+        if is_risk_on and is_high_liq:
             return {
                 "regime": "RISK_ON_HIGH_LIQ",
-                "multiplier": 2.0 * fng_multiplier,
-                "desc": "🟢 RISK ON + Багато лікві: Ідеальний режим, агресивний хасл мільйонів."
+                "multiplier": 2.0,  # Режим ULTRA AGGRESSIVE (10% ризику)
+                "desc": "🟢 RISK ON + Багато лікви: Ідеальний режим. Хаслимо мільйони!"
             }
-
-        elif is_global_bullish and not is_local_bullish:
+        elif is_risk_on:
             return {
-                "regime": "BULL_MARKET_CORRECTION",
-                "multiplier": 0.3,  # Різко ріжемо ризик під час зливу
-                "desc": "🟡 КОРЕКЦІЯ: Глобальний тренд вверх, але локально ринок падає. Будь обережним."
+                "regime": "RISK_ON_LOW_LIQ",
+                "multiplier": 1.0,
+                "desc": "🟡 RISK ON + Мало лікви: Вибірковий ріст. Треба багато ресерчити."
             }
-
-        elif not is_global_bullish and is_high_liq:
+        elif is_crashing:
             return {
-                "regime": "RISK_OFF_HIGH_LIQ",
-                "multiplier": 0.5 * fng_multiplier,
-                "desc": "🟠 RISK OFF + Паніка: Ведмежий ринок з великими обсягами. Тільки короткі скальп-угоди."
+                "regime": "CRASH_DETECTION",
+                "multiplier": 0.0,
+                "desc": "🚨 ПАНІКА/ЗЛИВ: Ринковий обвал! Рятуємо капітал. Торги зупинено."
             }
-
         else:
             return {
-                "regime": "RISK_OFF_LOW_LIQ",
+                "regime": "RISK_OFF",
                 "multiplier": 0.0,
-                "desc": "🔴 СМЕРТЬ: Ринок мертвий або летить у прірву без ліквідності. Торгівлю зупинено."
+                "desc": "🔴 RISK OFF: Ведмежий тренд або смерть ліквідності. Тільки спот/DCA."
             }

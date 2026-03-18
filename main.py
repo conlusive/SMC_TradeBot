@@ -18,21 +18,20 @@ from core.macro_filter import MacroFilter
 from core.scanner import MarketScanner
 from core.database import Database
 from core.sentiment_analyzer import SentimentAnalyzer
-from core.news_analyzer import NewsAnalyzer
 from utils.visualizer import create_signal_chart
 
 
 def main():
     print("🚀 Запуск SMC Trading Bot (ULTRA AGGRESSIVE EDITION)...\n")
 
-    # 1. Ініціалізація всіх систем
+    # 1. Ініціалізація систем
     fetcher = DataFetcher(exchange_id='bybit')
     db = Database()
-    risk_manager = RiskManager(balance_usdt=100, base_risk_pct=1.0)  # Початковий банк $100
+    # Вкажи свій реальний баланс для розрахунку 10% ризику
+    risk_manager = RiskManager(balance_usdt=100, base_risk_pct=1.0)
     executor = Executor()
     macro_filter = MacroFilter(fetcher)
     scanner = MarketScanner(fetcher)
-    news_analyzer = NewsAnalyzer()
 
     timeframe = '15m'
     SCAN_INTERVAL = 60
@@ -73,7 +72,7 @@ def main():
                         if sym in active_signals:
                             trade = active_signals[sym]
                             executor.execute_trade(sym, trade)
-                            db.log_trade(sym, trade['type'], trade['entry'])  # Запис в БД
+                            db.log_trade(sym, trade['type'], trade['entry'])
 
                             manage_caption = (
                                 f"🔥 <b>ПОЗИЦІЯ ВІДКРИТА: {sym}</b>\n"
@@ -81,9 +80,9 @@ def main():
                                 f"⚙️ Плече: <b>{trade['leverage']}x</b>\n"
                                 f"🎯 Вхід: {trade['entry']}\n"
                                 f"🛑 SL: {trade['stop_loss']}\n"
-                                f"✅ TP: {trade['tp1']} | {trade['tp2']}\n"
+                                f"✅ TP1: {trade['tp1']} | TP2: {trade['tp2']}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🛰 <i>Моніторинг активний...</i>"
+                                f"⏳ <i>Бот контролює цілі...</i>"
                             )
                             edit_telegram_caption(msg_id, manage_caption, {
                                 "inline_keyboard": [[{"text": f"🛑 Закрити {sym}", "callback_data": f"close_{sym}"}]]})
@@ -100,16 +99,14 @@ def main():
                 current_macro = macro_filter.get_market_regime()
                 btc_sentiment = fetcher.get_market_sentiment('BTC/USDT')
                 btc_analysis = SentimentAnalyzer.analyze(btc_sentiment, 'BTC/USDT')
-                fng = news_analyzer.get_fear_greed_index()
 
                 hot_symbols = scanner.get_hot_symbols(top_n=3)
                 coins_formatted = ", ".join([f"<code>{s}</code>" for s in hot_symbols])
 
                 status_text = (
-                    f"🛡 <b>SMC TRADE BOT STATUS</b>\n"
+                    f"🛡 <b>SMC TOTAL CONTROL STATUS</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📊 <b>Стан:</b> {current_macro['desc']}\n"
-                    f"🧠 <b>Настрій:</b> {fng['label']} ({fng['value']}/100)\n"
+                    f"📊 <b>Макро (4h):</b> {current_macro['desc']}\n"
                     f"💰 BTC Funding: <code>{btc_analysis['funding']}%</code>\n"
                     f"📈 BTC OI: <code>{btc_analysis['oi_formatted']}</code>\n"
                     f"🔥 Цілі: {coins_formatted}\n"
@@ -122,16 +119,16 @@ def main():
                 else:
                     edit_telegram_message(status_message_id, status_text)
 
-                # --- 5. ПОШУК СИГНАЛІВ (MTF 1H + 15M) ---
+                # --- 5. ТОРГОВА ЛОГІКА (Тільки якщо макро дозволяє) ---
                 if current_macro["multiplier"] > 0:
                     for sym in hot_symbols:
-                        # Тренд на 1 годину (Multi-Timeframe Filter)
+                        # 1. ПЕРЕВІРКА ТРЕНДУ 1H (Multi-Timeframe Confirmation)
                         df_1h = fetcher.get_historical_data(sym, '1h', limit=50)
                         if df_1h is None: continue
                         ema_1h = df_1h['close'].ewm(span=50).mean().iloc[-1]
                         trend_1h = "UP" if df_1h.iloc[-1]['close'] > ema_1h else "DOWN"
 
-                        # Аналіз 15 хвилин (SMC Strategy)
+                        # 2. АНАЛІЗ 15M (SMC + Liquidity Sweeps)
                         df = fetcher.get_historical_data(sym, timeframe, limit=100)
                         if df is not None:
                             engine = SMCEngine(df)
@@ -139,9 +136,10 @@ def main():
                             signal = engine.get_latest_signal()
 
                             if signal and df.iloc[-2]['timestamp'] != last_signal_times.get(sym):
-                                # Фільтр за годинним трендом
+                                # Умова: сигнал збігається з трендом 1г
                                 if ("BUY" in signal['type'] and trend_1h == "UP") or (
                                         "SELL" in signal['type'] and trend_1h == "DOWN"):
+
                                     trade = risk_manager.calculate_trade(signal['type'], df.iloc[-2]['close'],
                                                                          signal['recent_low'], signal['recent_high'],
                                                                          current_macro)
@@ -154,15 +152,14 @@ def main():
                                                                                        'regime'] == "RISK_ON_HIGH_LIQ" else "🛡 NORMAL ENTRY"
 
                                         msg = (
-                                            f"🎯 <b>НОВИЙ СЕТАП: {sym}</b>\n"
+                                            f"🎯 <b>СИГНАЛ ПІДТВЕРДЖЕНО: {sym}</b>\n"
                                             f"━━━━━━━━━━━━━━━━━━━━\n"
                                             f"📈 Режим: {tag}\n"
                                             f"⚙️ Плече: <b>{trade['leverage']}x</b>\n"
-                                            f"💰 Funding: <code>{fetcher.get_market_sentiment(sym)['funding']}%</code>\n"
                                             f"━━━━━━━━━━━━━━━━━━━━\n"
                                             f"🎯 Вхід: <b>{trade['entry']}</b>\n"
                                             f"🛑 SL: <code>{trade['stop_loss']}</code>\n"
-                                            f"✅ TP1: <code>{trade['tp1']}</code> (50%)\n"
+                                            f"✅ TP1: <code>{trade['tp1']}</code>\n"
                                             f"⚖️ Ризик: {trade['risk_pct']}% (${trade['risk_usd']})"
                                         )
                                         send_telegram_photo(chart, msg, reply_markup={"inline_keyboard": [
@@ -174,7 +171,7 @@ def main():
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\n🛑 Роботу бота зупинено користувачем.")
+        print("\n🛑 Бот зупинений користувачем.")
         sys.exit(0)
     except Exception as e:
         print(f"❌ Критична помилка: {e}")
