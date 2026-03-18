@@ -18,20 +18,28 @@ from core.macro_filter import MacroFilter
 from core.scanner import MarketScanner
 from core.database import Database
 from core.sentiment_analyzer import SentimentAnalyzer
+from core.dca_investor import DCAInvestor
 from utils.visualizer import create_signal_chart
 
 
 def main():
-    print("🚀 Запуск SMC Trading Bot (ULTRA AGGRESSIVE EDITION)...\n")
+    print("🚀 Запуск SMC Trading Bot (FIXED ULTRA AGGRESSIVE EDITION)...\n")
 
     # 1. Ініціалізація систем
     fetcher = DataFetcher(exchange_id='bybit')
     db = Database()
-    # Вкажи свій реальний баланс для розрахунку 10% ризику
+
+    # ВИПРАВЛЕНО: Передаємо об'єкт біржі в Executor
+    executor = Executor(fetcher.exchange)
+
+    # Налаштування депозиту ($100). Базовий ризик 1% (стане 10% в RISK_ON)
     risk_manager = RiskManager(balance_usdt=100, base_risk_pct=1.0)
-    executor = Executor()
+
     macro_filter = MacroFilter(fetcher)
     scanner = MarketScanner(fetcher)
+
+    # ВИПРАВЛЕНО: Ініціалізуємо DCAInvestor
+    dca_investor = DCAInvestor(fetcher.exchange)
 
     timeframe = '15m'
     SCAN_INTERVAL = 60
@@ -47,7 +55,7 @@ def main():
             current_time = time.time()
             now = datetime.now()
 
-            # --- 2. ЩОДЕННИЙ ЗВІТ (о 09:00 ранку) ---
+            # --- 2. ЩОДЕННИЙ ЗВІТ ---
             if now.hour == 9 and now.minute == 0 and last_report_date != now.strftime("%Y-%m-%d"):
                 stats = db.get_daily_stats()
                 report = (
@@ -60,7 +68,7 @@ def main():
                 send_telegram_message(report)
                 last_report_date = now.strftime("%Y-%m-%d")
 
-            # --- 3. ОБРОБКА КНОПОК ТА ІСТОРІЇ ---
+            # --- 3. ОБРОБКА КНОПОК ---
             updates = get_telegram_updates()
             for update in updates:
                 if 'callback_query' in update:
@@ -72,7 +80,9 @@ def main():
                         if sym in active_signals:
                             trade = active_signals[sym]
                             executor.execute_trade(sym, trade)
-                            db.log_trade(sym, trade['type'], trade['entry'])
+
+                            # ВИПРАВЛЕНО: Додано leverage для запису в БД
+                            db.log_trade(sym, trade['type'], trade['entry'], trade['leverage'])
 
                             manage_caption = (
                                 f"🔥 <b>ПОЗИЦІЯ ВІДКРИТА: {sym}</b>\n"
@@ -119,16 +129,14 @@ def main():
                 else:
                     edit_telegram_message(status_message_id, status_text)
 
-                # --- 5. ТОРГОВА ЛОГІКА (Тільки якщо макро дозволяє) ---
+                # --- 5. ТОРГОВА ЛОГІКА ---
                 if current_macro["multiplier"] > 0:
                     for sym in hot_symbols:
-                        # 1. ПЕРЕВІРКА ТРЕНДУ 1H (Multi-Timeframe Confirmation)
                         df_1h = fetcher.get_historical_data(sym, '1h', limit=50)
                         if df_1h is None: continue
                         ema_1h = df_1h['close'].ewm(span=50).mean().iloc[-1]
                         trend_1h = "UP" if df_1h.iloc[-1]['close'] > ema_1h else "DOWN"
 
-                        # 2. АНАЛІЗ 15M (SMC + Liquidity Sweeps)
                         df = fetcher.get_historical_data(sym, timeframe, limit=100)
                         if df is not None:
                             engine = SMCEngine(df)
@@ -136,7 +144,6 @@ def main():
                             signal = engine.get_latest_signal()
 
                             if signal and df.iloc[-2]['timestamp'] != last_signal_times.get(sym):
-                                # Умова: сигнал збігається з трендом 1г
                                 if ("BUY" in signal['type'] and trend_1h == "UP") or (
                                         "SELL" in signal['type'] and trend_1h == "DOWN"):
 
@@ -166,6 +173,12 @@ def main():
                                             [{"text": f"🚀 Trade {sym}", "callback_data": f"execute_{sym}"},
                                              {"text": "🗑 Skip", "callback_data": "ignore"}]]})
                                         last_signal_times[sym] = df.iloc[-2]['timestamp']
+
+                # РЕЖИМ DCA (Капітуляція / Смерть)
+                elif current_macro["multiplier"] == 0:
+                    dca_report = dca_investor.execute_dca(risk_manager.balance)
+                    if dca_report and dca_report != "LOW_BALANCE":
+                        send_telegram_message(f"🛒 <b>DCA ЗАКУПКА:</b>\n" + "\n".join(dca_report))
 
                 last_scan_time = current_time
             time.sleep(1)
