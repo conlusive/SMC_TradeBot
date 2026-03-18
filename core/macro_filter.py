@@ -1,57 +1,73 @@
 import pandas as pd
+from core.news_analyzer import NewsAnalyzer  # Передбачається наявність цього модуля
 
 
 class MacroFilter:
     def __init__(self, data_fetcher):
         self.fetcher = data_fetcher
+        self.news_analyzer = NewsAnalyzer()
 
     def get_market_regime(self) -> dict:
         """
-        Аналізує Денний таймфрейм (1d) Біткоїна для визначення фази ринку.
-        Повертає словник з назвою режиму, описом та мультиплікатором ризику.
+        Аналізує ринок на двох рівнях: 1 день (Глобальний тренд) та 4 години (Локальний настрій).
+        Враховує Індекс Страху та Жадібності для коригування ризиків.
         """
-        # Завжди дивимось на BTC для загального фону ринку
-        df = self.fetcher.get_historical_data('BTC/USDT', '1d', limit=100)
+        # 1. Отримуємо дані
+        df_1d = self.fetcher.get_historical_data('BTC/USDT', '1d', limit=100)
+        df_4h = self.fetcher.get_historical_data('BTC/USDT', '4h', limit=100)
 
-        if df is None or len(df) < 50:
-            return {"regime": "UNKNOWN", "multiplier": 1.0, "desc": "Немає даних для аналізу"}
+        if df_1d is None or df_4h is None or len(df_1d) < 50:
+            return {"regime": "UNKNOWN", "multiplier": 1.0, "desc": "⚠️ Очікування даних..."}
 
-        # Рахуємо Денну EMA 50 та Середній обсяг за 14 днів
-        df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
-        df['vol_sma_14'] = df['volume'].rolling(window=14).mean()
+        # 2. Глобальний тренд (1 день)
+        ema_50_1d = df_1d['close'].ewm(span=50, adjust=False).mean().iloc[-2]
+        price_1d = df_1d['close'].iloc[-2]
 
-        last_closed = df.iloc[-2]  # Беремо останній закритий день
+        # 3. Локальний настрій (4 години)
+        ema_50_4h = df_4h['close'].ewm(span=50, adjust=False).mean().iloc[-2]
+        price_4h = df_4h['close'].iloc[-2]
 
-        # Умови
-        is_risk_on = last_closed['close'] > last_closed['ema_50']
-        is_high_liq = last_closed['volume'] > last_closed['vol_sma_14']
+        # 4. Ліквідність (Обсяги за 14 днів)
+        vol_sma_14 = df_1d['volume'].rolling(window=14).mean().iloc[-2]
+        current_vol = df_1d['volume'].iloc[-2]
 
-        # Матриця з 4 режимів за твоєю філософією
-        if is_risk_on and is_high_liq:
+        # 5. Sentiment Filter (Fear & Greed)
+        fng = self.news_analyzer.get_fear_greed_index()
+        fng_multiplier = 1.0
+        if fng['value'] > 80:
+            fng_multiplier = 0.5  # Extreme Greed (захист від перегріву)
+        elif fng['value'] < 20:
+            fng_multiplier = 1.2  # Extreme Fear (потенційне дно)
+
+        is_global_bullish = price_1d > ema_50_1d
+        is_local_bullish = price_4h > ema_50_4h
+        is_high_liq = current_vol > vol_sma_14
+
+        # МАТРИЦЯ РЕЖИМІВ ЗА ФІЛОСОФІЄЮ
+        if is_global_bullish and is_local_bullish and is_high_liq:
             return {
                 "regime": "RISK_ON_HIGH_LIQ",
-                "multiplier": 2.0,  # Збільшуємо ризик в 2 рази (агресивно)
-                "rr_multiplier": 1.5,  # Ставимо довші тейки (напр. 1:3 замість 1:2)
-                "desc": "🟢 RISK ON + Багато лікві: Ідеальний режим, гроші ллються рікою. Агресивні торги."
+                "multiplier": 2.0 * fng_multiplier,
+                "desc": "🟢 RISK ON + Багато лікві: Ідеальний режим, агресивний хасл мільйонів."
             }
-        elif is_risk_on and not is_high_liq:
+
+        elif is_global_bullish and not is_local_bullish:
             return {
-                "regime": "RISK_ON_LOW_LIQ",
-                "multiplier": 1.0,  # Стандартний ризик
-                "rr_multiplier": 1.0,
-                "desc": "🟡 RISK ON + Мало лікві: Вибірковий ріст. Треба думати і ресерчити. Стандартні торги."
+                "regime": "BULL_MARKET_CORRECTION",
+                "multiplier": 0.3,  # Різко ріжемо ризик під час зливу
+                "desc": "🟡 КОРЕКЦІЯ: Глобальний тренд вверх, але локально ринок падає. Будь обережним."
             }
-        elif not is_risk_on and is_high_liq:
+
+        elif not is_global_bullish and is_high_liq:
             return {
                 "regime": "RISK_OFF_HIGH_LIQ",
-                "multiplier": 0.5,  # Ріжемо ризик навпіл (торгуємо дуже обережно)
-                "rr_multiplier": 0.8,  # Тейки коротші
-                "desc": "🟠 RISK OFF + Злив/Волатильність: Небезпечний ринок, швидкі рухи вниз. Зменшений ризик."
+                "multiplier": 0.5 * fng_multiplier,
+                "desc": "🟠 RISK OFF + Паніка: Ведмежий ринок з великими обсягами. Тільки короткі скальп-угоди."
             }
+
         else:
             return {
                 "regime": "RISK_OFF_LOW_LIQ",
-                "multiplier": 0.0,  # ЗАБОРОНА ТОРГІВЛІ
-                "rr_multiplier": 0.0,
-                "desc": "🔴 RISK OFF + Смерть (Мало лікві): Ринок мертвий. Збереження капіталу. Торгівлю зупинено."
+                "multiplier": 0.0,
+                "desc": "🔴 СМЕРТЬ: Ринок мертвий або летить у прірву без ліквідності. Торгівлю зупинено."
             }
